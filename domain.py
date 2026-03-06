@@ -440,3 +440,22 @@ INITIAL_PROMPT: str = (
     "دفعت دين مئة ألف، سددت دفعة دين، استلمت مبلغ، انطيت واجب، "
     "عيادة مداخيل مئتين ألف، دخل راتب."
 )
+
+# ── Whisper hotwords ──────────────────────────────────────────────────────────
+# Passed as hotwords= to model.transcribe().  faster-whisper tokenizes this
+# string and prepends the tokens to the decoder prompt for every segment,
+# directly biasing beam search toward these token sequences.
+#
+# Complements initial_prompt (which provides broader text context).
+# Hotwords provide per-word logit pressure — most effective for short,
+# easily-confused domain terms that a long initial_prompt cannot reliably fix.
+#
+# Rules:
+#   • Use canonical target forms (what we WANT Whisper to output).
+#   • Prioritize words with known misrendering history.
+#   • Keep it short: the implementation caps at max_length/2 tokens (~224).
+#   • Do NOT duplicate large blocks — a focused list outperforms a long dump.
+HOTWORDS: str = (
+    "ماركت، بنزين، كهرباء، انترنت، إيجار، دين، سلفة، "
+    "دواء، صيدلية، مطعم، واجب، هدية، مصرف شخصي، عيادة"
+)
