@@ -18,7 +18,7 @@ print("faster-whisper import loaded")
 
 import domain   # Iraqi Arabic domain vocabulary — built once at import time
 print(f"Domain loaded: {len(domain._RAW_CATEGORIES)} categories, "
-      f"{len(domain._INDEX)} indexed keys")
+      f"{len(domain._PROTECTED_WORDS)} protected words")
 
 app = FastAPI()
 print("FastAPI app created")
@@ -149,29 +149,15 @@ async def transcribe(file: UploadFile = File(...)):
 
             raw_text = " ".join(segment.text.strip() for segment in segments).strip()
             normalized_text = domain.normalize_text(raw_text)
-            resolution = domain.resolve_categories(normalized_text)
-            print(f"Transcription done in {round(time.time() - start_time, 2)}s — "
-                  f"category={resolution['resolved_category']}")
+            print(f"Transcription done in {round(time.time() - start_time, 2)}s")
 
             return JSONResponse({
-                # ── Transcription ──────────────────────────────────────────
-                "text":                     raw_text,       # kept for back-compat
                 "raw_text":                 raw_text,
                 "normalized_text":          normalized_text,
                 "language":                 getattr(info, "language", LANGUAGE),
                 "duration":                 getattr(info, "duration", None),
                 "processing_time":          round(time.time() - start_time, 2),
                 "model":                    MODEL_NAME,
-                # ── Category resolution ────────────────────────────────────
-                "resolved_category":        resolution["resolved_category"],
-                "resolved_categories":      resolution["resolved_categories"],
-                "category_confidence":      resolution["category_confidence"],
-                "category_candidates":      resolution["category_candidates"],
-                "is_ambiguous":             resolution["is_ambiguous"],
-                "intent":                   resolution["intent"],
-                "warnings":                 resolution["warnings"],
-                "notes":                    resolution["notes"],
-                # ── Debug (Phase 1) ────────────────────────────────────────
                 "original_filename":        file.filename,
                 "original_suffix":          suffix,
                 "original_file_size_bytes": original_file_size,

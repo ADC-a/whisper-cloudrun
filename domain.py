@@ -1,18 +1,16 @@
 """
-domain.py  —  Iraqi Arabic expense domain knowledge for faster-whisper.
+domain.py  —  Iraqi Arabic normalization and Whisper domain bias.
 
-All heavy data structures (_INDEX, _PHRASE_KEYS, _AMBIGUOUS_KEYS) are built
-once at module import time (triggered by main.py at container startup).
+Loaded once at container startup by main.py.  Per-request calls to
+normalize_text() perform only compiled-regex substitutions and set
+lookups — no I/O, no model loading, no network calls.
 
-Per-request calls to normalize_text() and resolve_categories() perform only
-compiled-regex substitutions and dictionary lookups — no I/O, no model
-loading, no network calls.
+This module does NOT classify categories or detect intent.
+Those responsibilities belong to the downstream processing script.
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Optional
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -22,14 +20,14 @@ from typing import Optional
 _DIACRITICS_RE = re.compile(r'[\u064B-\u065F\u0640]')   # harakat + tatweel
 _ALEF_TABLE    = str.maketrans('أإآٱ', 'اااا')           # alef variants → ا
 
-# Safe Iraqi colloquial substitutions: 1-to-1 meaning, no ambiguity with other categories.
+# ── Safe Iraqi colloquial substitutions ──────────────────────────────────────
+# 1-to-1 meaning, no ambiguity with other domain words.
 _COLLOQUIAL: dict[str, str] = {
     'بانزين': 'بنزين',   # fuel (Iraqi spoken form)
-    'سمچ':    'سمك',     # fish (Iraqi spoken form, Gaf letter)
+    'سمچ':    'سمك',     # fish (Iraqi Gaf letter)
 }
 
-# Iraqi spoken number forms → canonical written forms.
-# Used in normalize_text() for human-readable display of the normalised text.
+# ── Iraqi spoken number forms → canonical written forms ──────────────────────
 _NUMBER_VARIANTS: dict[str, str] = {
     'تلاثه وعشرين': 'ثلاثة وعشرون',  # longest first to avoid partial match
     'تلاثين':        'ثلاثين',
@@ -47,8 +45,28 @@ _NUMBER_VARIANTS: dict[str, str] = {
     'ميه':           'مئة',
 }
 
+# ── Whisper misrendering corrections ─────────────────────────────────────────
+# Explicit curated map of words Whisper commonly misrenders for Iraqi Arabic
+# expense voice notes.  Each entry is hand-verified to be unambiguous:
+# the source form is NOT a valid distinct domain word, so replacing it is safe.
+#
+# SAFETY RULE: if a source word appears in _PROTECTED_WORDS (below), it will
+# NOT be corrected.  This prevents collisions like مركز ↔ ماركت.
+_WHISPER_CORRECTIONS: dict[str, str] = {
+    # Whisper sometimes renders ماركت with taa marbuta or Persian kaf
+    'ماركه':  'ماركت',
+    'مارکت':  'ماركت',    # Persian kaf (ک) → Arabic kaf (ك)
+    'مارکه':  'ماركت',    # Persian kaf + taa marbuta
+    # Common Whisper misrenderings for Iraqi expense words
+    'بنذين':  'بنزين',    # ذ→ز confusion
+    'كهربا':  'كهرباء',   # truncated hamza
+    'كهربه':  'كهرباء',   # taa marbuta instead of hamza
+    'انترنيت': 'انترنت',  # extra ya
+    'تلفون':  'تلفون',    # keep as-is (identity, safe)
+}
+
 # Compile substitution patterns once at import time.
-# (?<!\w) / (?!\w) used instead of \b for reliable Unicode word boundaries.
+# (?<!\w) / (?!\w) for reliable Unicode word boundaries.
 _COLLOQUIAL_SUBS = [
     (re.compile(r'(?<!\w)' + re.escape(k) + r'(?!\w)'), v)
     for k, v in sorted(_COLLOQUIAL.items(), key=lambda x: -len(x[0]))
@@ -57,53 +75,19 @@ _NUMBER_SUBS = [
     (re.compile(r'(?<!\w)' + re.escape(k) + r'(?!\w)'), v)
     for k, v in sorted(_NUMBER_VARIANTS.items(), key=lambda x: -len(x[0]))
 ]
-
-
-def normalize_text(text: str) -> str:
-    """
-    Normalize Iraqi Arabic text for display and downstream category matching.
-
-    Applied transformations:
-      • Remove diacritics + tatweel (harakat vary between speakers and ASR).
-      • Normalize alef variants أإآٱ → ا (semantically identical).
-      • Substitute safe Iraqi colloquial words: بانزين→بنزين, سمچ→سمك.
-      • Substitute Iraqi spoken number forms: تلاثين→ثلاثين, ميه→مئة, etc.
-
-    Intentionally NOT applied (to avoid silent category confusion):
-      • ة/ه and ى/ي — preserved so ماركت ≠ مركز remains detectable.
-      • Fuzzy/phonetic matching across category boundaries.
-      • Synonym expansion — handled explicitly in resolve_categories().
-    """
-    t = _DIACRITICS_RE.sub('', text).translate(_ALEF_TABLE)
-    for pat, rep in _COLLOQUIAL_SUBS:
-        t = pat.sub(rep, t)
-    for pat, rep in _NUMBER_SUBS:
-        t = pat.sub(rep, t)
-    return t
-
-
-def _mk(text: str) -> str:
-    """
-    Match-key: applied to BOTH query and index keys during category lookup.
-    More aggressive than normalize_text(): also collapses ة/ه and ى/ي.
-    This allows a keyword written as 'صيدلية' to match a transcription
-    written as 'صيدليه' (or vice versa) — while still keeping ماركت and
-    مركز distinct (they differ on ا/و, not on ة/ه).
-
-    This result is NEVER stored or returned to the caller.
-    """
-    t = _DIACRITICS_RE.sub('', text).translate(_ALEF_TABLE)
-    t = re.sub(r'ة(?=\s|$)', 'ه', t)   # taa marbuta → ha at word-end only
-    t = t.replace('ى', 'ي')             # alef maqsura → ya
-    return t.strip()
+_WHISPER_SUBS = [
+    (re.compile(r'(?<!\w)' + re.escape(k) + r'(?!\w)'), v)
+    for k, v in sorted(_WHISPER_CORRECTIONS.items(), key=lambda x: -len(x[0]))
+]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# §2  VOCABULARY DATA
+# §2  VOCABULARY DATA (reference + protected words)
 # ══════════════════════════════════════════════════════════════════════════════
+# Category keywords are kept here as domain reference material.  They are used
+# ONLY to build _PROTECTED_WORDS (preventing unsafe corrections) and to inform
+# INITIAL_PROMPT.  No classification or scoring is done in this module.
 
-# Intent triggers — checked before category scoring.
-# Matching any of these biases the 'intent' field of the response.
 INCOME_TRIGGERS: list[str] = [
     'دخل', 'وارد', 'راتب', 'معاش', 'ايداع', 'إيداع', 'بيع',
     'استرجاع', 'تحصيل', 'مبيعات', 'حواله وارده', 'حوالة واردة',
@@ -116,10 +100,6 @@ DEBT_TRIGGERS: list[str] = [
     'دفعة دين', 'دفعه دين',
 ]
 
-# Categories: each value is a list of keywords.
-# Position 0  = canonical name           → weight 2.0 in resolver
-# Positions 1-2 = common aliases/names   → weight 1.5
-# Remaining     = supporting keywords    → weight 1.0
 _RAW_CATEGORIES: dict[str, list[str]] = {
 
     'personal': [
@@ -328,201 +308,81 @@ _RAW_CATEGORIES: dict[str, list[str]] = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# §3  INDEX BUILDING  (runs once at import)
+# §3  PROTECTED WORDS SET  (built once at import)
 # ══════════════════════════════════════════════════════════════════════════════
+# All single words that appear as valid domain vocabulary.  A word in this set
+# is NEVER auto-corrected to another word by the Whisper correction step.
+# This is the safety mechanism that prevents ماركت ↔ مركز confusion:
+# both are protected, so neither gets silently rewritten.
 
-# _INDEX: match-key → [(category, weight)]
-# Weight reflects keyword position: canonical(2.0) > alias(1.5) > supporting(1.0)
-_INDEX: dict[str, list[tuple[str, float]]] = {}
-_PHRASE_KEYS: set[str] = set()   # match-keys that contain spaces (multi-word)
+def _build_protected() -> set[str]:
+    """Extract all single words from all category keyword lists + triggers."""
+    words: set[str] = set()
+    for kw_list in _RAW_CATEGORIES.values():
+        for phrase in kw_list:
+            # Normalize alef before inserting so lookup works after step 2
+            normalized = _DIACRITICS_RE.sub('', phrase).translate(_ALEF_TABLE)
+            for w in normalized.split():
+                if len(w) > 1:   # skip single-char noise
+                    words.add(w)
+    for trigger_list in (INCOME_TRIGGERS, DEBT_TRIGGERS):
+        for phrase in trigger_list:
+            normalized = _DIACRITICS_RE.sub('', phrase).translate(_ALEF_TABLE)
+            for w in normalized.split():
+                if len(w) > 1:
+                    words.add(w)
+    # Explicitly protect key ambiguous words
+    words.add('مركز')
+    words.add('ماركت')
+    return words
 
-for _cat, _keywords in _RAW_CATEGORIES.items():
-    for _i, _kw in enumerate(_keywords):
-        _key = _mk(_kw)
-        _weight = 2.0 if _i == 0 else (1.5 if _i < 3 else 1.0)
-        _INDEX.setdefault(_key, []).append((_cat, _weight))
-        if ' ' in _key:
-            _PHRASE_KEYS.add(_key)
-
-# Phrases sorted longest-first for greedy left-to-right matching
-_SORTED_PHRASES: list[str] = sorted(_PHRASE_KEYS, key=len, reverse=True)
-
-# Keys that appear in more than one category → ambiguous if sole signal
-_AMBIGUOUS_KEYS: set[str] = {k for k, v in _INDEX.items() if len(v) > 1}
-
-# Pre-computed intent trigger sets (single-word forms)
-_INCOME_KEYS_SINGLE: set[str] = {_mk(t) for t in INCOME_TRIGGERS if ' ' not in t}
-_DEBT_KEYS_SINGLE:   set[str] = {_mk(t) for t in DEBT_TRIGGERS   if ' ' not in t}
-
-# Compiled patterns for multi-word intent triggers
-_INCOME_PHRASE_PATS: list[re.Pattern] = [
-    re.compile(r'(?<!\w)' + re.escape(_mk(t)) + r'(?!\w)')
-    for t in INCOME_TRIGGERS if ' ' in t
-]
-_DEBT_PHRASE_PATS: list[re.Pattern] = [
-    re.compile(r'(?<!\w)' + re.escape(_mk(t)) + r'(?!\w)')
-    for t in DEBT_TRIGGERS if ' ' in t
-]
+_PROTECTED_WORDS: set[str] = _build_protected()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# §4  CATEGORY RESOLVER
-# ══════════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class _Score:
-    category: str
-    score:    float = 0.0
-    keywords: list[str] = field(default_factory=list)
-
-
-def resolve_categories(
-    text: str,
-    *,
-    min_confidence: float = 0.20,
-) -> dict:
+def normalize_text(text: str) -> str:
     """
-    Resolve expense categories from (already normalized) Arabic text.
+    Normalize Iraqi Arabic text for downstream processing.
 
-    Parameters
-    ----------
-    text : str
-        The text to resolve — pass the output of normalize_text() for best results,
-        or raw transcribed text (normalize_text() is applied internally too).
-    min_confidence : float
-        Candidates below this score are excluded from category_candidates.
+    Pipeline (order matters):
+      1. Remove diacritics + tatweel (harakat vary between speakers and ASR).
+      2. Normalize alef variants أإآٱ → ا (semantically identical).
+      3. Safe colloquial substitutions: بانزين→بنزين, سمچ→سمك.
+      4. Iraqi spoken number forms: تلاثين→ثلاثين, ميه→مئة, etc.
+      5. Whisper misrendering corrections — ONLY for words NOT in the
+         protected vocabulary.  If a source word is a valid known domain
+         word, it is kept unchanged.  This prevents مركز↔ماركت confusion.
 
-    Returns
-    -------
-    dict with keys:
-        resolved_category   str | None   top category if confidence is sufficient
-        resolved_categories list[str]    same as resolved_category wrapped in list
-        category_confidence float        0.0–1.0, normalised share of total score
-        category_candidates list[dict]   candidates above min_confidence
-        is_ambiguous        bool         True when top-two scores are too close
-        intent              str | None   "income" | "debt" | None
-        warnings            list[str]
-        notes               str
+    Intentionally NOT applied:
+      • ة/ه and ى/ي normalization — kept as-is so ماركت ≠ مركز.
+      • Fuzzy/phonetic matching — only explicit curated corrections.
+      • Category classification or intent detection.
     """
-    # Apply normalization then match-key transform for internal lookup
-    mk_text = _mk(normalize_text(text))
-    words   = mk_text.split()
-    word_set = set(words)
+    # 1–2: diacritics, tatweel, alef variants
+    t = _DIACRITICS_RE.sub('', text).translate(_ALEF_TABLE)
 
-    warnings:    list[str] = []
-    notes_parts: list[str] = []
+    # 3: safe colloquial words
+    for pat, rep in _COLLOQUIAL_SUBS:
+        t = pat.sub(rep, t)
 
-    # ── Intent detection ─────────────────────────────────────────────────────
-    intent: Optional[str] = None
-    if word_set & _INCOME_KEYS_SINGLE or any(p.search(mk_text) for p in _INCOME_PHRASE_PATS):
-        intent = 'income'
-    elif word_set & _DEBT_KEYS_SINGLE or any(p.search(mk_text) for p in _DEBT_PHRASE_PATS):
-        intent = 'debt'
+    # 4: Iraqi number variants
+    for pat, rep in _NUMBER_SUBS:
+        t = pat.sub(rep, t)
 
-    # ── Score accumulation ───────────────────────────────────────────────────
-    scores: dict[str, _Score] = {}
-    consumed = mk_text  # we remove matched phrases to avoid double-counting
+    # 5: Whisper misrendering corrections (protected-word-safe)
+    for pat, rep in _WHISPER_SUBS:
+        # Check each match: only replace if the matched word is NOT protected
+        def _safe_replace(m: re.Match) -> str:
+            word = m.group(0)
+            if word in _PROTECTED_WORDS:
+                return word   # keep original — it's a valid domain word
+            return rep
+        t = pat.sub(_safe_replace, t)
 
-    # 1. Multi-word phrases (greedy, longest first)
-    for phrase in _SORTED_PHRASES:
-        if phrase in consumed:
-            for cat, weight in _INDEX[phrase]:
-                s = scores.setdefault(cat, _Score(cat))
-                s.score    += weight * 1.5   # phrase match bonus
-                s.keywords.append(phrase)
-            consumed = consumed.replace(phrase, ' ', 1)
-
-    # 2. Single-word tokens from whatever wasn't consumed by phrases
-    for word in consumed.split():
-        if word in _INDEX:
-            for cat, weight in _INDEX[word]:
-                s = scores.setdefault(cat, _Score(cat))
-                s.score    += weight
-                s.keywords.append(word)
-
-    # ── No matches ───────────────────────────────────────────────────────────
-    if not scores:
-        return {
-            'resolved_category':   None,
-            'resolved_categories': [],
-            'category_confidence': 0.0,
-            'category_candidates': [],
-            'is_ambiguous':        False,
-            'intent':              intent,
-            'warnings':            ['No category keywords found in text'],
-            'notes':               'Unresolved — no matching vocabulary',
-        }
-
-    # ── Normalise scores to fractional shares ────────────────────────────────
-    ranked = sorted(scores.values(), key=lambda c: c.score, reverse=True)
-    total  = sum(c.score for c in ranked)
-    for c in ranked:
-        c.score = round(c.score / total, 3)
-
-    top    = ranked[0]
-    second = ranked[1] if len(ranked) > 1 else None
-
-    # ── Ambiguity check ──────────────────────────────────────────────────────
-    is_ambiguous = False
-    if second and second.score > 0.0:
-        gap = top.score - second.score
-        if gap < 0.20:
-            is_ambiguous = True
-            warnings.append(
-                f"Ambiguous: '{top.category}' ({top.score:.2f}) vs "
-                f"'{second.category}' ({second.score:.2f}) — gap={gap:.2f}"
-            )
-
-    # Warn if the only signals are words that appear in multiple categories
-    if top.keywords and all(_mk(kw) in _AMBIGUOUS_KEYS for kw in top.keywords):
-        is_ambiguous = True
-        warnings.append(
-            f"All matched keywords for '{top.category}' are cross-category — "
-            "confidence may be misleading"
-        )
-
-    # ── Resolution decision ───────────────────────────────────────────────────
-    resolved: Optional[str] = None
-    confidence = top.score
-
-    if confidence >= 0.50 and not is_ambiguous:
-        resolved = top.category
-        notes_parts.append(f"Resolved: '{resolved}' (conf={confidence:.2f})")
-    elif confidence >= 0.35:
-        resolved = top.category
-        notes_parts.append(f"Tentative: '{resolved}' (conf={confidence:.2f})")
-        if not is_ambiguous:
-            warnings.append(f"Low confidence for '{resolved}' — review recommended")
-    else:
-        notes_parts.append(f"Not resolved (top conf={confidence:.2f} < 0.35)")
-        warnings.append("Category confidence too low — not resolved")
-
-    # ── Build response ────────────────────────────────────────────────────────
-    candidates = [
-        {
-            'category':         c.category,
-            'confidence':       c.score,
-            # deduplicate while preserving order
-            'matched_keywords': list(dict.fromkeys(c.keywords)),
-        }
-        for c in ranked
-        if c.score >= min_confidence
-    ]
-
-    return {
-        'resolved_category':   resolved,
-        'resolved_categories': [resolved] if resolved else [],
-        'category_confidence': confidence,
-        'category_candidates': candidates,
-        'is_ambiguous':        is_ambiguous,
-        'intent':              intent,
-        'warnings':            warnings,
-        'notes':               '; '.join(notes_parts) if notes_parts else 'OK',
-    }
+    return t
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# §5  WHISPER INITIAL PROMPT
+# §4  WHISPER INITIAL PROMPT
 # ══════════════════════════════════════════════════════════════════════════════
 # Passed as initial_prompt to model.transcribe() on every request.
 # Biases the decoder toward domain vocabulary without forcing output.
@@ -534,7 +394,7 @@ def resolve_categories(
 #     form; this is the primary guard against the ماركت/مركز confusion.
 #   • Iraqi amount formats (خمسين ألف, مئة ألف) teach the number style.
 #   • Short representative phrases match the speaking style of expense notes.
-#   • Kept under ~200 words to stay within the effective context window.
+#   • Kept concise (~50 words) to stay within the effective context window.
 
 INITIAL_PROMPT: str = (
     "ماركت، مصرف شخصي، بنزين، دواء، كهرباء، نت، ايجار، دين، سلفة، "
