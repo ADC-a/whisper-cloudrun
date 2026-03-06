@@ -1,4 +1,6 @@
-flask
-openai-whisper
-torch
-gunicorn
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+faster-whisper==1.0.3
+python-multipart==0.0.9
+ctranslate2==4.4.0
+av==12.3.0
