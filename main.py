@@ -9,9 +9,12 @@ print("main.py import started")
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+
+print("fastapi imports loaded")
+
 from faster_whisper import WhisperModel
 
-print("faster-whisper imports loaded")
+print("faster-whisper import loaded")
 
 app = FastAPI()
 print("FastAPI app created")
