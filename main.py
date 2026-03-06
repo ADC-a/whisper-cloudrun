@@ -21,7 +21,7 @@ print("FastAPI app created")
 
 MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "1"))
+BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
 LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ar")
 
 print(f"MODEL_NAME={MODEL_NAME}, COMPUTE_TYPE={COMPUTE_TYPE}, BEAM_SIZE={BEAM_SIZE}, LANGUAGE={LANGUAGE}")
@@ -57,9 +57,29 @@ def run_ffmpeg(cmd):
         raise RuntimeError(result.stderr.strip() or "ffmpeg failed")
 
 
+def get_audio_duration(file_path):
+    """Get audio duration in seconds using ffprobe. Returns None on failure."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return round(float(result.stdout.strip()), 2)
+    except Exception as e:
+        print(f"ffprobe duration failed: {e}")
+    return None
+
+
 def preprocess_audio(input_path, workdir):
     converted_path = str(Path(workdir) / "converted.wav")
-    trimmed_path = str(Path(workdir) / "trimmed.wav")
 
     print("Running ffmpeg convert...")
     run_ffmpeg([
@@ -72,25 +92,7 @@ def preprocess_audio(input_path, workdir):
         converted_path,
     ])
 
-    try:
-        print("Running ffmpeg silence remove...")
-        run_ffmpeg([
-            "ffmpeg",
-            "-y",
-            "-i", converted_path,
-            "-af",
-            "silenceremove=start_periods=1:start_silence=0.25:start_threshold=-35dB:"
-            "stop_periods=1:stop_silence=0.25:stop_threshold=-35dB",
-            trimmed_path,
-        ])
-
-        if os.path.exists(trimmed_path) and os.path.getsize(trimmed_path) > 1024:
-            print("Using trimmed audio")
-            return trimmed_path
-    except Exception as e:
-        print(f"Silence remove skipped: {e}")
-
-    print("Using converted audio")
+    print("Using converted audio (silence trimming disabled)")
     return converted_path
 
 
@@ -117,11 +119,16 @@ async def transcribe(file: UploadFile = File(...)):
         if not content:
             raise HTTPException(status_code=400, detail="Empty file")
 
+        original_file_size = len(content)
+
         with open(input_path, "wb") as f:
             f.write(content)
 
         try:
+            original_duration = get_audio_duration(input_path)
             processed_path = preprocess_audio(input_path, temp_dir)
+            processed_duration = get_audio_duration(processed_path)
+            processed_file_size = os.path.getsize(processed_path)
 
             model = get_model()
             print("Starting transcription...")
@@ -141,6 +148,12 @@ async def transcribe(file: UploadFile = File(...)):
                 "duration": getattr(info, "duration", None),
                 "processing_time": round(time.time() - start_time, 2),
                 "model": MODEL_NAME,
+                "original_filename": file.filename,
+                "original_suffix": suffix,
+                "original_file_size_bytes": original_file_size,
+                "processed_file_size_bytes": processed_file_size,
+                "original_duration_seconds": original_duration,
+                "processed_duration_seconds": processed_duration,
             })
 
         except HTTPException:
