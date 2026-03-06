@@ -4,16 +4,14 @@ import threading
 from flask import Flask, request, jsonify
 import whisper
 
-# محاولة توفير ffmpeg بدون Dockerfile (حل سريع داخل Source editor)
-# إذا فشل، نروح لحل GitHub + Dockerfile
+# محاولة توفير ffmpeg بدون Dockerfile
 try:
-    import imageio_ffmpeg  # pip: imageio-ffmpeg
+    import imageio_ffmpeg
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     ffmpeg_dir = os.path.dirname(ffmpeg_exe)
     os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
-    os.environ["FFMPEG_BINARY"] = ffmpeg_exe  # مفيد لبعض المكتبات
+    os.environ["FFMPEG_BINARY"] = ffmpeg_exe
 except Exception:
-    # إذا ما متوفر/فشل، نخليها تمر (وساعتها راح يطلع خطأ ffmpeg مثل قبل)
     pass
 
 app = Flask(__name__)
@@ -52,10 +50,17 @@ def transcribe():
             uploaded.save(tmp_path)
 
         model = get_model()
-        # Whisper يعتمد على ffmpeg للتحويل/القراءة في كثير من الحالات
-        result = model.transcribe(tmp_path)
 
-        return jsonify({"text": (result.get("text") or "").strip()}), 200
+        result = model.transcribe(
+            tmp_path,
+            task="transcribe",
+            language="ar",
+            fp16=False
+        )
+
+        return jsonify({
+            "text": (result.get("text") or "").strip()
+        }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -70,4 +75,3 @@ def transcribe():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
-    # rebuild trigger
