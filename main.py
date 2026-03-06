@@ -24,7 +24,7 @@ def get_model():
     if _model is None:
         with _model_lock:
             if _model is None:
-                mmodel_name = os.getenv("WHISPER_MODEL", "base")
+                 model_name = os.getenv("WHISPER_MODEL", "base")
                 _model = whisper.load_model(model_name)
     return _model
 
