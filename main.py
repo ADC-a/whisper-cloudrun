@@ -1,77 +1,135 @@
 import os
+import time
 import tempfile
+import subprocess
 import threading
-from flask import Flask, request, jsonify
-import whisper
+from pathlib import Path
 
-# محاولة توفير ffmpeg بدون Dockerfile
-try:
-    import imageio_ffmpeg
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-    ffmpeg_dir = os.path.dirname(ffmpeg_exe)
-    os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
-    os.environ["FFMPEG_BINARY"] = ffmpeg_exe
-except Exception:
-    pass
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
+from faster_whisper import WhisperModel
 
-app = Flask(__name__)
+app = FastAPI()
+
+MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
+COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "1"))
+LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ar")
 
 _model = None
 _model_lock = threading.Lock()
 
-def get_model():
+
+def get_model() -> WhisperModel:
     global _model
     if _model is None:
         with _model_lock:
             if _model is None:
-                 model_name = os.getenv("WHISPER_MODEL", "base")
-                _model = whisper.load_model(model_name)
+                _model = WhisperModel(
+                    MODEL_NAME,
+                    device="cpu",
+                    compute_type=COMPUTE_TYPE,
+                    cpu_threads=max(1, os.cpu_count() or 1),
+                )
     return _model
+
+
+def run_ffmpeg(cmd: list[str]) -> None:
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "ffmpeg failed")
+
+
+def preprocess_audio(input_path: str, workdir: str) -> str:
+    converted_path = str(Path(workdir) / "converted.wav")
+    trimmed_path = str(Path(workdir) / "trimmed.wav")
+
+    run_ffmpeg([
+        "ffmpeg",
+        "-y",
+        "-i", input_path,
+        "-ac", "1",
+        "-ar", "16000",
+        "-vn",
+        converted_path,
+    ])
+
+    try:
+        run_ffmpeg([
+            "ffmpeg",
+            "-y",
+            "-i", converted_path,
+            "-af",
+            "silenceremove=start_periods=1:start_silence=0.25:start_threshold=-35dB:"
+            "stop_periods=1:stop_silence=0.25:stop_threshold=-35dB",
+            trimmed_path,
+        ])
+
+        if os.path.exists(trimmed_path) and os.path.getsize(trimmed_path) > 1024:
+            return trimmed_path
+    except Exception:
+        pass
+
+    return converted_path
+
 
 @app.get("/")
 def health():
-    return "ok", 200
+    return {"status": "ok", "model": MODEL_NAME, "compute_type": COMPUTE_TYPE}
+
 
 @app.post("/transcribe")
-def transcribe():
-    if "file" not in request.files:
-        return jsonify({"error": "no audio file (field name must be 'file')"}), 400
+async def transcribe(file: UploadFile = File(...)):
+    start_time = time.time()
 
-    uploaded = request.files["file"]
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
 
-    _, ext = os.path.splitext(uploaded.filename or "")
-    if not ext:
-        ext = ".mp4"
+    suffix = Path(file.filename).suffix.lower() or ".tmp"
 
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp_path = tmp.name
-            uploaded.save(tmp_path)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_path = str(Path(temp_dir) / f"input{suffix}")
 
-        model = get_model()
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty file")
 
-        result = model.transcribe(
-            tmp_path,
-            task="transcribe",
-            language="ar",
-            fp16=False
-        )
+        with open(input_path, "wb") as f:
+            f.write(content)
 
-        return jsonify({
-            "text": (result.get("text") or "").strip()
-        }), 200
+        try:
+            processed_path = preprocess_audio(input_path, temp_dir)
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+            model = get_model()
+            segments, info = model.transcribe(
+                processed_path,
+                language=LANGUAGE,
+                beam_size=BEAM_SIZE,
+                vad_filter=True,
+            )
 
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except:
-                pass
+            text = " ".join(segment.text.strip() for segment in segments).strip()
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8080"))
-    app.run(host="0.0.0.0", port=port)
+            return JSONResponse({
+                "text": text,
+                "language": getattr(info, "language", LANGUAGE),
+                "duration": getattr(info, "duration", None),
+                "processing_time": round(time.time() - start_time, 2),
+                "model": MODEL_NAME,
+            })
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": str(e),
+                    "processing_time": round(time.time() - start_time, 2),
+                },
+            )
