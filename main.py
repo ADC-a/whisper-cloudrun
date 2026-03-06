@@ -20,11 +20,12 @@ app = FastAPI()
 print("FastAPI app created")
 
 MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
+MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", f"/models/faster-whisper-{MODEL_NAME}")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
 LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ar")
 
-print(f"MODEL_NAME={MODEL_NAME}, COMPUTE_TYPE={COMPUTE_TYPE}, BEAM_SIZE={BEAM_SIZE}, LANGUAGE={LANGUAGE}")
+print(f"MODEL_NAME={MODEL_NAME}, MODEL_DIR={MODEL_DIR}, COMPUTE_TYPE={COMPUTE_TYPE}, BEAM_SIZE={BEAM_SIZE}, LANGUAGE={LANGUAGE}")
 
 _model = None
 _model_lock = threading.Lock()
@@ -35,9 +36,9 @@ def get_model():
     if _model is None:
         with _model_lock:
             if _model is None:
-                print("Loading Whisper model...")
+                print(f"Loading Whisper model from {MODEL_DIR}...")
                 _model = WhisperModel(
-                    MODEL_NAME,
+                    MODEL_DIR,
                     device="cpu",
                     compute_type=COMPUTE_TYPE,
                     cpu_threads=max(1, os.cpu_count() or 1),
