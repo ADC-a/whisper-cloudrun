@@ -1,6 +1,16 @@
-__pycache__
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.log
+*.tmp
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.webm
 .env
 .git
+.gitignore
+.DS_Store
+README.md
