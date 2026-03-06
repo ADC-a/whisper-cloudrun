@@ -5,36 +5,45 @@ import subprocess
 import threading
 from pathlib import Path
 
+print("main.py import started")
+
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from faster_whisper import WhisperModel
 
+print("faster-whisper imports loaded")
+
 app = FastAPI()
+print("FastAPI app created")
 
 MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "1"))
 LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ar")
 
+print(f"MODEL_NAME={MODEL_NAME}, COMPUTE_TYPE={COMPUTE_TYPE}, BEAM_SIZE={BEAM_SIZE}, LANGUAGE={LANGUAGE}")
+
 _model = None
 _model_lock = threading.Lock()
 
 
-def get_model() -> WhisperModel:
+def get_model():
     global _model
     if _model is None:
         with _model_lock:
             if _model is None:
+                print("Loading Whisper model...")
                 _model = WhisperModel(
                     MODEL_NAME,
                     device="cpu",
                     compute_type=COMPUTE_TYPE,
                     cpu_threads=max(1, os.cpu_count() or 1),
                 )
+                print("Whisper model loaded successfully")
     return _model
 
 
-def run_ffmpeg(cmd: list[str]) -> None:
+def run_ffmpeg(cmd):
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -45,10 +54,11 @@ def run_ffmpeg(cmd: list[str]) -> None:
         raise RuntimeError(result.stderr.strip() or "ffmpeg failed")
 
 
-def preprocess_audio(input_path: str, workdir: str) -> str:
+def preprocess_audio(input_path, workdir):
     converted_path = str(Path(workdir) / "converted.wav")
     trimmed_path = str(Path(workdir) / "trimmed.wav")
 
+    print("Running ffmpeg convert...")
     run_ffmpeg([
         "ffmpeg",
         "-y",
@@ -60,6 +70,7 @@ def preprocess_audio(input_path: str, workdir: str) -> str:
     ])
 
     try:
+        print("Running ffmpeg silence remove...")
         run_ffmpeg([
             "ffmpeg",
             "-y",
@@ -71,21 +82,25 @@ def preprocess_audio(input_path: str, workdir: str) -> str:
         ])
 
         if os.path.exists(trimmed_path) and os.path.getsize(trimmed_path) > 1024:
+            print("Using trimmed audio")
             return trimmed_path
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Silence remove skipped: {e}")
 
+    print("Using converted audio")
     return converted_path
 
 
 @app.get("/")
 def health():
+    print("Health endpoint hit")
     return {"status": "ok", "model": MODEL_NAME, "compute_type": COMPUTE_TYPE}
 
 
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
     start_time = time.time()
+    print("Transcribe endpoint hit")
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -106,6 +121,7 @@ async def transcribe(file: UploadFile = File(...)):
             processed_path = preprocess_audio(input_path, temp_dir)
 
             model = get_model()
+            print("Starting transcription...")
             segments, info = model.transcribe(
                 processed_path,
                 language=LANGUAGE,
@@ -114,6 +130,7 @@ async def transcribe(file: UploadFile = File(...)):
             )
 
             text = " ".join(segment.text.strip() for segment in segments).strip()
+            print(f"Transcription done in {round(time.time() - start_time, 2)}s")
 
             return JSONResponse({
                 "text": text,
@@ -126,6 +143,7 @@ async def transcribe(file: UploadFile = File(...)):
         except HTTPException:
             raise
         except Exception as e:
+            print(f"Transcription error: {e}")
             return JSONResponse(
                 status_code=500,
                 content={
