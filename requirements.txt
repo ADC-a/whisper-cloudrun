@@ -4,3 +4,4 @@ faster-whisper==1.0.3
 python-multipart==0.0.9
 ctranslate2==4.4.0
 av==12.3.0
+numpy
