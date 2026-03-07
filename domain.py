@@ -12,6 +12,11 @@ from __future__ import annotations
 
 import re
 
+from numbers_ar_iq import (
+    SAFE_NUMBER_CORRECTIONS as _SAFE_NUMBER_CORRECTIONS,
+    NUMBER_VARIANTS         as _NUMBER_VARIANTS_RAW,
+)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # §1  TEXT NORMALIZATION
@@ -28,56 +33,9 @@ _COLLOQUIAL: dict[str, str] = {
 }
 
 # ── Iraqi spoken number forms → canonical written forms ──────────────────────
-_NUMBER_VARIANTS: dict[str, str] = {
-    # ── Compound forms (longest first to avoid partial-match errors) ──────────
-    'تلاثه وعشرين':  'ثلاثة وعشرون',
-    'تلاثه وعشرون':  'ثلاثة وعشرون',
-
-    # ── Hundreds ─────────────────────────────────────────────────────────────
-    'تسعمية':        'تسعة مئة',     # 900
-    'تسعميه':        'تسعة مئة',
-    'ثمانمية':       'ثمانية مئة',   # 800
-    'ثمانميه':       'ثمانية مئة',
-    'سبعمية':        'سبعة مئة',     # 700
-    'سبعميه':        'سبعة مئة',
-    'ستمية':         'ستة مئة',      # 600
-    'ستميه':         'ستة مئة',
-    'خمسمية':        'خمسة مئة',     # 500
-    'خمسميه':        'خمسة مئة',
-    'اربعميه':       'اربعة مئة',    # 400
-    'اربعمية':       'اربعة مئة',
-    'تلثميه':        'ثلاث مئة',     # 300
-    'تلثمية':        'ثلاث مئة',
-    'ميتين':         'مئتان',        # 200
-    'الميه':         'مئة',          # 100
-
-    # ── Teens ─────────────────────────────────────────────────────────────────
-    'تسعطعش':        'تسعة عشر',     # 19
-    'ثمنطعش':        'ثمانية عشر',   # 18
-    'سبعطعش':        'سبعة عشر',     # 17  (also سبعطش below)
-    'سبعطش':         'سبعة عشر',
-    'سطعش':          'ستة عشر',      # 16
-    'مستعش':         'خمسة عشر',     # 15 — common Iraqi form
-    'خمستعش':        'خمسة عشر',     # 15 — another Iraqi variant
-    'خمسطعش':        'خمسة عشر',     # 15
-    'اربعطعش':       'اربعة عشر',    # 14
-    'تلطعش':         'ثلاثة عشر',    # 13
-    'ثنعش':          'اثنا عشر',     # 12
-    'اهدعش':         'احد عشر',      # 11
-
-    # ── Tens ─────────────────────────────────────────────────────────────────
-    'تسعين':         'تسعين',        # 90 (already standard, keep for consistency)
-    'ثمانين':        'ثمانين',       # 80
-    'سبعين':         'سبعين',        # 70
-    'ستين':          'ستين',         # 60
-    'خمسين':         'خمسين',        # 50
-    'اربعين':        'اربعين',       # 40
-    'تلاثين':        'ثلاثين',       # 30
-    'عشرين':         'عشرين',        # 20 (standard form, keep)
-
-    # ── Single hundred / mia variant ─────────────────────────────────────────
-    'ميه':           'مئة',          # 100
-}
+# Sourced from numbers_ar_iq.NUMBER_VARIANTS (imported above).
+# domain.py only holds the compiled regex list; the data lives in numbers_ar_iq.
+_NUMBER_VARIANTS: dict[str, str] = _NUMBER_VARIANTS_RAW
 
 # ── Whisper misrendering corrections ─────────────────────────────────────────
 # Explicit curated map of words Whisper commonly misrenders for Iraqi Arabic
@@ -108,6 +66,12 @@ _COLLOQUIAL_SUBS = [
     (re.compile(r'(?<!\w)' + re.escape(k) + r'(?!\w)'), v)
     for k, v in sorted(_COLLOQUIAL.items(), key=lambda x: -len(x[0]))
 ]
+# Step 3a: safe number corrections (مير, ميت) — applied before full variants
+_SAFE_NUMBER_SUBS = [
+    (re.compile(r'(?<!\w)' + re.escape(k) + r'(?!\w)'), v)
+    for k, v in sorted(_SAFE_NUMBER_CORRECTIONS.items(), key=lambda x: -len(x[0]))
+]
+# Step 3b: full Iraqi number variants (longest keys first, handles spaced forms)
 _NUMBER_SUBS = [
     (re.compile(r'(?<!\w)' + re.escape(k) + r'(?!\w)'), v)
     for k, v in sorted(_NUMBER_VARIANTS.items(), key=lambda x: -len(x[0]))
@@ -397,11 +361,19 @@ def normalize_text(text: str) -> str:
     # 1–2: diacritics, tatweel, alef variants
     t = _DIACRITICS_RE.sub('', text).translate(_ALEF_TABLE)
 
+    # 2b: insert space after conjunction و glued to the next word
+    # e.g. "مليون وميه" → "مليون و ميه" so word-boundary regexes can match ميه.
+    t = re.sub(r'(?<= )و(?=\S)', 'و ', t)
+
     # 3: safe colloquial words
     for pat, rep in _COLLOQUIAL_SUBS:
         t = pat.sub(rep, t)
 
-    # 4: Iraqi number variants
+    # 4a: safe number corrections (مير→مية, ميت→مئة) — before full variants
+    for pat, rep in _SAFE_NUMBER_SUBS:
+        t = pat.sub(rep, t)
+
+    # 4b: Iraqi number variants → canonical مئة-based forms
     for pat, rep in _NUMBER_SUBS:
         t = pat.sub(rep, t)
 
