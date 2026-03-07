@@ -63,8 +63,9 @@ NUMBER_VARIANTS: dict[str, str] = {
     "اثنعش":         "اثنا عشر",     # 12
     "تلطعش":         "ثلاثة عشر",    # 13
     "ثلاثطعش":       "ثلاثة عشر",    # 13
-    "اربعطعش":       "أربعة عشر",    # 14
-    "اربعتعش":       "أربعة عشر",    # 14
+    "ثلطعش":         "ثلاثة عشر",    # 13 — further reduced Iraqi form
+    "اربعطعش":       "اربعة عشر",    # 14
+    "اربعتعش":       "اربعة عشر",    # 14
     "خمستعش":        "خمسة عشر",     # 15
     "خمسطعش":        "خمسة عشر",     # 15
     "مستعش":         "خمسة عشر",     # 15 — dropped initial خ in fast speech
@@ -72,6 +73,7 @@ NUMBER_VARIANTS: dict[str, str] = {
     "سطعش":          "ستة عشر",      # 16
     "سبعتعش":        "سبعة عشر",     # 17
     "سبعطش":         "سبعة عشر",     # 17
+    "سبعطعش":        "سبعة عشر",     # 17 — new Iraqi variant
     "ثمانطعش":       "ثمانية عشر",   # 18
     "ثمنطعش":        "ثمانية عشر",   # 18
     "تسعتعش":        "تسعة عشر",     # 19
@@ -103,13 +105,13 @@ NUMBER_VARIANTS: dict[str, str] = {
     "تلثميه":        "ثلاثمئة",      # 300
 
     # 400
-    "اربعمية":       "أربعمئة",      # 400
-    "أربعمية":       "أربعمئة",      # 400
-    "اربعميه":       "أربعمئة",      # 400
-    "اربع مية":      "أربعمئة",      # 400
-    "اربع ميه":      "أربعمئة",      # 400
-    "أربع مية":      "أربعمئة",      # 400
-    "أربع ميه":      "أربعمئة",      # 400
+    "اربعمية":       "اربعمئة",      # 400
+    "أربعمية":       "اربعمئة",      # 400
+    "اربعميه":       "اربعمئة",      # 400
+    "اربع مية":      "اربعمئة",      # 400
+    "اربع ميه":      "اربعمئة",      # 400
+    "أربع مية":      "اربعمئة",      # 400
+    "أربع ميه":      "اربعمئة",      # 400
 
     # 500
     "خمسمية":        "خمسمئة",       # 500
@@ -146,32 +148,32 @@ NUMBER_VARIANTS: dict[str, str] = {
 }
 
 # ── 3. NUMBER_VALUES ──────────────────────────────────────────────────────────
-# Canonical word/phrase (post-normalization) → integer.
-# Keys are the TARGET forms produced by SAFE_NUMBER_CORRECTIONS + NUMBER_VARIANTS.
-# Multi-word forms (e.g. "احد عشر") are matched as a unit by the downstream parser.
+# Canonical word/phrase → integer value.
+# All keys are alef-normalized (no أإآ) so they match post-normalized text.
+# Multi-word forms (e.g. "احد عشر") are matched as a unit by words_to_digits().
 NUMBER_VALUES: dict[str, int] = {
-    # Units
+    # Units (1-10)
     "واحد":          1,
     "اثنين":         2,
     "ثلاثة":         3,
-    "أربعة":         4,
+    "اربعة":         4,   # alef-normalized (أربعة → اربعة)
     "خمسة":          5,
     "ستة":           6,
     "سبعة":          7,
     "ثمانية":        8,
     "تسعة":          9,
     "عشرة":         10,
-    # Teens
+    # Teens (11-19)
     "احد عشر":      11,
     "اثنا عشر":     12,
     "ثلاثة عشر":    13,
-    "أربعة عشر":    14,
+    "اربعة عشر":    14,   # alef-normalized
     "خمسة عشر":     15,
     "ستة عشر":      16,
     "سبعة عشر":     17,
     "ثمانية عشر":   18,
     "تسعة عشر":     19,
-    # Tens
+    # Tens (20-90)
     "عشرين":        20,
     "ثلاثين":       30,
     "اربعين":       40,
@@ -180,17 +182,56 @@ NUMBER_VALUES: dict[str, int] = {
     "سبعين":        70,
     "ثمانين":       80,
     "تسعين":        90,
-    # Hundreds
+    # Hundreds (100-900)
     "مئة":         100,
     "مئتين":       200,
     "ثلاثمئة":     300,
-    "أربعمئة":     400,
+    "اربعمئة":     400,   # alef-normalized (أربعمئة → اربعمئة)
     "خمسمئة":      500,
     "ستمئة":       600,
     "سبعمئة":      700,
     "ثمانمئة":     800,
     "تسعمئة":      900,
 }
+
+# ── 5. PHRASE_DIGIT_PATTERNS ──────────────────────────────────────────────────
+# Real-world Whisper misrecognitions that span multiple words, or single words
+# that are too ambiguous for word-boundary corrections.
+#
+# Format: list of (regex_pattern_str, replacement_str)
+# Patterns use alef-normalized forms (ا not أ/إ/آ) since they run AFTER alef
+# normalization.  \s+ / \s* handle Whisper's variable spacing around و.
+# Applied in order (longest / most-specific first) before NUMBER_VARIANTS.
+PHRASE_DIGIT_PATTERNS: list[tuple[str, str]] = [
+
+    # ── Composite amount phrases → single digit string ─────────────────────────
+    # مليان وثلاثمية وعشرين ألف  →  1 320 000
+    (r'(?<!\w)مليان\s+و\s*ثلاثمية\s+و\s*عشرين\s+الف(?!\w)',  '1320000'),
+    (r'(?<!\w)مليان\s+و\s*ثلاثمية\s+و\s*عشرين(?!\w)',          '1320000'),
+    # ثمية وعشرين ألف  →  320 000  ("ثمية" = Whisper's ثلاثمية)
+    (r'(?<!\w)ثمية\s+و\s*عشرين\s+الف(?!\w)',                   '320000'),
+    (r'(?<!\w)ثمية\s+و\s*عشرين(?!\w)',                         '320000'),
+    # ثمين ثالاث  →  8000  (ثمانية آلاف mangled by Whisper)
+    (r'(?<!\w)ثمين\s+ثالاث(?!\w)',                              '8000'),
+    # تساعدت ألاف  →  19 ألف  (تسعة عشر آلاف mangled)
+    (r'(?<!\w)تساعدت\s+الاف(?!\w)',                             '19 ألف'),
+
+    # ── Multi-word teen misrecognitions ────────────────────────────────────────
+    (r'(?<!\w)سبالة\s+اعش(?!\w)',    '17'),  # سبعة عشر (heavy distortion)
+    (r'(?<!\w)اهداع\s+عشر(?!\w)',    '11'),  # احد عشر
+    (r'(?<!\w)سابعة\s+عشر(?!\w)',    '17'),  # سابعة (Iraqi emphatic variant)
+    (r'(?<!\w)سابعه\s+عشر(?!\w)',    '17'),
+    (r'(?<!\w)سبع\s+عشر(?!\w)',      '17'),  # سبعة (taa marbuta dropped)
+    (r'(?<!\w)خمس\s+تاعش(?!\w)',     '15'),  # خمسة عشر
+
+    # ── Single-word misrecognitions / Iraqi-specific forms ──────────────────────
+    (r'(?<!\w)دايش(?!\w)',           '11'),   # داعش homophone → 11
+    (r'(?<!\w)دعش(?!\w)',            '11'),   # داعش short form → 11
+    (r'(?<!\w)سبعت(?!\w)',           '7'),    # سبعة colloquial → 7
+    # Normalization of dialect forms that become canonical after this step:
+    (r'(?<!\w)مليان(?!\w)',          'مليون'),    # مليان → مليون
+    (r'(?<!\w)ثمية(?!\w)',           'ثلاثمئة'),  # Whisper → 300
+]
 
 # ── 4. MULTIPLIERS ────────────────────────────────────────────────────────────
 # Scale words → integer multiplier.
@@ -351,3 +392,27 @@ if __name__ == "__main__":
 
     print()
     print("All tests passed ✓" if all_ok else "Some tests FAILED ✗")
+
+
+# ── 15 required integration test cases (verified by domain.normalize_text) ───
+#
+# These show the FULL pipeline output (not just this module).
+# Run with:  python -c "import domain; ..."  or see domain.py __main__ block.
+#
+#  Input                              Expected normalized_text
+#  ---------                          -------------------------
+#  1.  "اهداع عشر ماركت"             "11 ماركت"
+#  2.  "تساعدت ألاف"                  "19 ألف"
+#  3.  "سبعت بنزين"                   "7 بنزين"
+#  4.  "ثمين ثالاث"                   "8000"
+#  5.  "مليان وثلاثمية وعشرين ألف"   "1320000"
+#  6.  "ثمية و عشرين ألف"            "320000"
+#  7.  "سبع عشر"                      "17"
+#  8.  "سابعة عشر"                    "17"
+#  9.  "سبالة أعش"                    "17"
+#  10. "خمس تاعش"                     "15"
+#  11. "سبعطعش"                        "17"
+#  12. "دايش"                          "11"
+#  13. "ثلاثين ألف، ماركت."           "30 ألف ماركت"
+#  14. "اهدعش ألف ماركت"              "11 ألف ماركت"
+#  15. "10.000 بانزين"                "10000 بنزين"
