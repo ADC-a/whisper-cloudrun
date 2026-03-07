@@ -79,6 +79,7 @@ NUMBER_VARIANTS: dict[str, str] = {
     "تسعتعش":        "تسعة عشر",     # 19
     "تسعطش":         "تسعة عشر",     # 19
     "تسعطعش":        "تسعة عشر",     # 19
+    "ساعتعش":        "تسعة عشر",     # 19 — Whisper heavy distortion
 
     # ── C. Tens ───────────────────────────────────────────────────────────────
     "تلاثين":        "ثلاثين",       # 30 — most common Iraqi form
@@ -217,12 +218,14 @@ PHRASE_DIGIT_PATTERNS: list[tuple[str, str]] = [
     (r'(?<!\w)تساعدت\s+الاف(?!\w)',                             '19 ألف'),
 
     # ── Multi-word teen misrecognitions ────────────────────────────────────────
+    (r'(?<!\w)سببات\s+اعش(?!\w)',    '17'),  # سبعة عشر (heavy distortion)
     (r'(?<!\w)سبالة\s+اعش(?!\w)',    '17'),  # سبعة عشر (heavy distortion)
     (r'(?<!\w)اهداع\s+عشر(?!\w)',    '11'),  # احد عشر
     (r'(?<!\w)سابعة\s+عشر(?!\w)',    '17'),  # سابعة (Iraqi emphatic variant)
     (r'(?<!\w)سابعه\s+عشر(?!\w)',    '17'),
     (r'(?<!\w)سبع\s+عشر(?!\w)',      '17'),  # سبعة (taa marbuta dropped)
     (r'(?<!\w)خمس\s+تاعش(?!\w)',     '15'),  # خمسة عشر
+    (r'(?<!\w)ثلاثة\s+عش(?!\w)',     '13'),  # ثلاثة عشر (truncated عشر → عش)
 
     # ── Single-word misrecognitions / Iraqi-specific forms ──────────────────────
     (r'(?<!\w)دايش(?!\w)',           '11'),   # داعش homophone → 11
@@ -231,6 +234,18 @@ PHRASE_DIGIT_PATTERNS: list[tuple[str, str]] = [
     # Normalization of dialect forms that become canonical after this step:
     (r'(?<!\w)مليان(?!\w)',          'مليون'),    # مليان → مليون
     (r'(?<!\w)ثمية(?!\w)',           'ثلاثمئة'),  # Whisper → 300
+
+    # ── Contextual ألف misrecognitions: only fire after a digit ───────────────
+    # Safety rules:
+    #   • (?<=\d\s) — requires an immediately preceding digit + single space.
+    #                 Prevents replacement in free-standing "ثلاث" (= 3).
+    #   • (?!\s+(?:مية|ميه|مئة)) — protects hundred compounds:
+    #                 "5 ثلاث مية" keeps "ثلاث مية" intact for NUMBER_VARIANTS.
+    # Examples:
+    #   "8 ثلاث بنزين"  → "8 ألف بنزين"   (ثلاث = Whisper's آلاف)
+    #   "11 تلاث ماركت" → "11 ألف ماركت"  (تلاث = Whisper's آلاف)
+    (r'(?<=\d\s)ثلاث(?!\w)(?!\s+(?:مية|ميه|مئة))',  'ألف'),
+    (r'(?<=\d\s)تلاث(?!\w)(?!\s+(?:مية|ميه|مئة))',  'ألف'),
 ]
 
 # ── 4. MULTIPLIERS ────────────────────────────────────────────────────────────
@@ -416,3 +431,12 @@ if __name__ == "__main__":
 #  13. "ثلاثين ألف، ماركت."           "30 ألف ماركت"
 #  14. "اهدعش ألف ماركت"              "11 ألف ماركت"
 #  15. "10.000 بانزين"                "10000 بنزين"
+#
+#  New cases (contextual / additional misrecognitions):
+#  16. "سببات اعش"                    "17"
+#  17. "ساعتعش"                        "19"
+#  18. "ثلاثة عش"                      "13"
+#  19. "8 ثلاث بنزين"                 "8 ألف بنزين"    ← digit context only
+#  20. "11 تلاث ماركت"                "11 ألف ماركت"   ← digit context only
+#  21. "ثلاث مية دينار"               "300 دينار"       ← NOT converted (hundred compound)
+#  22. "ثلاث ماركت"                   "ثلاث ماركت"      ← NOT converted (no digit before)
