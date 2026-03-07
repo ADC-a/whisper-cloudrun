@@ -29,20 +29,54 @@ _COLLOQUIAL: dict[str, str] = {
 
 # ── Iraqi spoken number forms → canonical written forms ──────────────────────
 _NUMBER_VARIANTS: dict[str, str] = {
-    'تلاثه وعشرين': 'ثلاثة وعشرون',  # longest first to avoid partial match
-    'تلاثين':        'ثلاثين',
-    'تلثميه':        'ثلاث مئة',
-    'اربعميه':       'اربعة مئة',
-    'اربعطعش':       'اربعة عشر',
-    'خمسطعش':        'خمسة عشر',
-    'ثمنطعش':        'ثمانية عشر',
+    # ── Compound forms (longest first to avoid partial-match errors) ──────────
+    'تلاثه وعشرين':  'ثلاثة وعشرون',
+    'تلاثه وعشرون':  'ثلاثة وعشرون',
+
+    # ── Hundreds ─────────────────────────────────────────────────────────────
+    'تسعمية':        'تسعة مئة',     # 900
+    'تسعميه':        'تسعة مئة',
+    'ثمانمية':       'ثمانية مئة',   # 800
+    'ثمانميه':       'ثمانية مئة',
+    'سبعمية':        'سبعة مئة',     # 700
+    'سبعميه':        'سبعة مئة',
+    'ستمية':         'ستة مئة',      # 600
+    'ستميه':         'ستة مئة',
+    'خمسمية':        'خمسة مئة',     # 500
+    'خمسميه':        'خمسة مئة',
+    'اربعميه':       'اربعة مئة',    # 400
+    'اربعمية':       'اربعة مئة',
+    'تلثميه':        'ثلاث مئة',     # 300
+    'تلثمية':        'ثلاث مئة',
+    'ميتين':         'مئتان',        # 200
+    'الميه':         'مئة',          # 100
+
+    # ── Teens ─────────────────────────────────────────────────────────────────
+    'تسعطعش':        'تسعة عشر',     # 19
+    'ثمنطعش':        'ثمانية عشر',   # 18
+    'سبعطعش':        'سبعة عشر',     # 17  (also سبعطش below)
     'سبعطش':         'سبعة عشر',
-    'تلطعش':         'ثلاثة عشر',
-    'اهدعش':         'احد عشر',
-    'سطعش':          'ستة عشر',
-    'ثنعش':          'اثنا عشر',
-    'الميه':         'مئة',
-    'ميه':           'مئة',
+    'سطعش':          'ستة عشر',      # 16
+    'مستعش':         'خمسة عشر',     # 15 — common Iraqi form
+    'خمستعش':        'خمسة عشر',     # 15 — another Iraqi variant
+    'خمسطعش':        'خمسة عشر',     # 15
+    'اربعطعش':       'اربعة عشر',    # 14
+    'تلطعش':         'ثلاثة عشر',    # 13
+    'ثنعش':          'اثنا عشر',     # 12
+    'اهدعش':         'احد عشر',      # 11
+
+    # ── Tens ─────────────────────────────────────────────────────────────────
+    'تسعين':         'تسعين',        # 90 (already standard, keep for consistency)
+    'ثمانين':        'ثمانين',       # 80
+    'سبعين':         'سبعين',        # 70
+    'ستين':          'ستين',         # 60
+    'خمسين':         'خمسين',        # 50
+    'اربعين':        'اربعين',       # 40
+    'تلاثين':        'ثلاثين',       # 30
+    'عشرين':         'عشرين',        # 20 (standard form, keep)
+
+    # ── Single hundred / mia variant ─────────────────────────────────────────
+    'ميه':           'مئة',          # 100
 }
 
 # ── Whisper misrendering corrections ─────────────────────────────────────────
@@ -63,6 +97,9 @@ _WHISPER_CORRECTIONS: dict[str, str] = {
     'كهربه':  'كهرباء',   # taa marbuta instead of hamza
     'انترنيت': 'انترنت',  # extra ya
     'تلفون':  'تلفون',    # keep as-is (identity, safe)
+    # Iraqi phonetic rendering of آلاف (thousands)
+    # e.g. "ثلاث تلاف" → "ثلاث آلاف" (3000)
+    'تلاف':   'آلاف',
 }
 
 # Compile substitution patterns once at import time.
@@ -402,4 +439,23 @@ INITIAL_PROMPT: str = (
     "ماركت خمسين ألف، بنزين ستين ألف، مصرف شخصي ثلاثين ألف، "
     "دفعت دين مئة ألف، سددت دفعة دين، استلمت مبلغ، انطيت واجب، "
     "عيادة مداخيل مئتين ألف، دخل راتب."
+)
+
+# ── Whisper hotwords ──────────────────────────────────────────────────────────
+# Passed as hotwords= to model.transcribe().  faster-whisper tokenizes this
+# string and prepends the tokens to the decoder prompt for every segment,
+# directly biasing beam search toward these token sequences.
+#
+# Complements initial_prompt (which provides broader text context).
+# Hotwords provide per-word logit pressure — most effective for short,
+# easily-confused domain terms that a long initial_prompt cannot reliably fix.
+#
+# Rules:
+#   • Use canonical target forms (what we WANT Whisper to output).
+#   • Prioritize words with known misrendering history.
+#   • Keep it short: the implementation caps at max_length/2 tokens (~224).
+#   • Do NOT duplicate large blocks — a focused list outperforms a long dump.
+HOTWORDS: str = (
+    "ماركت، بنزين، كهرباء، انترنت، إيجار، دين، سلفة، "
+    "دواء، صيدلية، مطعم، واجب، هدية، مصرف شخصي، عيادة"
 )

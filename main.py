@@ -142,9 +142,13 @@ async def transcribe(file: UploadFile = File(...)):
                 language=LANGUAGE,
                 beam_size=BEAM_SIZE,
                 vad_filter=True,
-                # Domain-biased prompt: teaches Whisper the expected vocabulary
-                # (e.g. ماركت not مركز) and Iraqi amount formats.
+                # initial_prompt: text-context hint (Iraqi expense style + amounts).
                 initial_prompt=domain.INITIAL_PROMPT,
+                # hotwords: tokenized and prepended to each segment's decoder
+                # prompt, directly boosting probability for critical domain terms.
+                # Complements initial_prompt; most effective for short ambiguous
+                # words (ماركت vs مركز, كهرباء vs كهربه, انترنت vs انترنيت).
+                hotwords=domain.HOTWORDS,
             )
 
             raw_text = " ".join(segment.text.strip() for segment in segments).strip()
