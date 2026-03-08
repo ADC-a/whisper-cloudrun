@@ -149,16 +149,30 @@ async def transcribe(file: UploadFile = File(...)):
                 # Complements initial_prompt; most effective for short ambiguous
                 # words (ماركت vs مركز, كهرباء vs كهربه, انترنت vs انترنيت).
                 hotwords=domain.HOTWORDS,
+                # Anti-hallucination parameters:
+                temperature=0,                    # greedy decoding — no sampling randomness
+                condition_on_previous_text=False, # prevents repetition loops across segments
+                no_speech_threshold=0.6,          # reject ambiguous silence/speech segments
+                compression_ratio_threshold=2.0,  # skip repetitive output (high compression = hallucination)
             )
 
-            raw_text = " ".join(segment.text.strip() for segment in segments).strip()
+            segments_list = list(segments)
+            raw_text = " ".join(s.text.strip() for s in segments_list).strip()
+
+            if segments_list:
+                avg_logprob = sum(s.avg_logprob for s in segments_list) / len(segments_list)
+                confidence = round(min(1.0, max(0.0, (avg_logprob + 1.0))), 2)
+            else:
+                confidence = 0.0
+
             normalized_text = domain.normalize_text(raw_text)
             print(f"Transcription done in {round(time.time() - start_time, 2)}s")
 
             return JSONResponse({
-                "raw_text":                 raw_text,
-                "normalized_text":          normalized_text,
-                "language":                 getattr(info, "language", LANGUAGE),
+                "raw_text":                  raw_text,
+                "normalized_text":           normalized_text,
+                "confidence":                confidence,
+                "language":                  getattr(info, "language", LANGUAGE),
                 "duration":                 getattr(info, "duration", None),
                 "processing_time":          round(time.time() - start_time, 2),
                 "model":                    MODEL_NAME,
