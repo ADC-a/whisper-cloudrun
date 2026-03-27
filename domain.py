@@ -34,6 +34,31 @@ _COLLOQUIAL: dict[str, str] = {
     'سمچ':    'سمك',     # fish (Iraqi Gaf letter)
 }
 
+# ── Words starting with و that must NOT be split by the conjunction rule ──────
+# These are real words beginning with و (not the conjunction و + another word).
+# Step 3 of normalize_text() checks this set before inserting a space.
+_WAW_PROTECTED_WORDS: frozenset[str] = frozenset({
+    'وقود',     # fuel
+    'ورقة',     # paper / banknote
+    'ورق',      # paper (general)
+    'وطن',      # homeland
+    'وزارة',    # ministry
+    'وزاره',    # ministry (dialect spelling)
+    'وقت',      # time
+    'وجبة',     # meal
+    'وجبه',     # meal (dialect spelling)
+    'ودائع',    # deposits
+    'وكيل',     # agent / dealer
+    'ولد',      # boy / child
+    'ورشة',     # workshop
+    'ورشه',     # workshop (dialect spelling)
+    'وصفة',     # prescription / recipe
+    'وصفه',     # prescription (dialect spelling)
+    'وصل',      # receipt
+    'واجب',     # duty / obligation  (already in domain, extra safety)
+    'واجبات',   # duties
+})
+
 # ── Iraqi spoken number forms → canonical written forms ──────────────────────
 # Sourced from numbers_ar_iq.NUMBER_VARIANTS (imported above).
 # domain.py only holds the compiled regex list; the data lives in numbers_ar_iq.
@@ -469,9 +494,21 @@ def normalize_text(text: str) -> str:
     # Step 1-2: diacritics, tatweel, alef variants
     t = _DIACRITICS_RE.sub('', text).translate(_ALEF_TABLE)
 
-    # Step 3: insert space after conjunction و glued to the next word
+    # Step 3: insert space after conjunction و glued to the next word.
+    # Protected words (وقود, ورقة, …) are skipped — they start with و
+    # but are not conjunctions.
     # "مليون وميه" → "مليون و ميه" so word-boundary regexes match ميه
-    t = re.sub(r'(?<= )و(?=\S)', 'و ', t)
+    def _split_waw(m: re.Match) -> str:
+        # Grab the full word starting at this و
+        rest = m.string[m.end():]
+        next_chars = re.match(r'\S+', rest)
+        if next_chars:
+            full_word = 'و' + next_chars.group(0)
+            if full_word in _WAW_PROTECTED_WORDS:
+                return 'و'   # not a conjunction — leave intact
+        return 'و '          # conjunction — insert space
+
+    t = re.sub(r'(?<= )و(?=\S)', _split_waw, t)
 
     # Step 4: thousand-dot cleanup  10.000 → 10000
     t = _THOUSAND_DOT_RE.sub('', t)
